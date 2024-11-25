@@ -1,0 +1,3 @@
+Train autoencoder without masking first to check if it's possible
+try training from scratch with masking
+compare with training with masking after training without masking
