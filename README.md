@@ -6,5 +6,5 @@ First try of clustering on a simple autoencoder on CIFAR10 wasnt very efficient 
 Inspired by Masked Autoencoders Are Scalable Vision Learners
 Kaiming He, Xinlei Chen, Saining Xie, Yanghao Li, Piotr Dollár, Ross Girshick
 
-and Denoising Masked AutoEncoders Help Robust Classification
-Quanlin Wu, Hang Ye, Yuntian Gu, Huishuai Zhang, Liwei Wang, Di He
+(and i realized later than this idea is quite similar to this paper : Denoising Masked AutoEncoders Help Robust Classification
+Quanlin Wu, Hang Ye, Yuntian Gu, Huishuai Zhang, Liwei Wang, Di He)
