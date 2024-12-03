@@ -8,3 +8,6 @@ Kaiming He, Xinlei Chen, Saining Xie, Yanghao Li, Piotr Dollár, Ross Girshick
 
 (and i realized later than this idea is quite similar to this paper : Denoising Masked AutoEncoders Help Robust Classification
 Quanlin Wu, Hang Ye, Yuntian Gu, Huishuai Zhang, Liwei Wang, Di He)
+
+Add contrastive loss after encoding, idea from "ViT-AE++: Improving Vision Transformer Autoencoder for Self-supervised Medical Image Representations
+Chinmay Prabhakar, Hongwei Bran Li, Jiancheng Yang, Suprosana Shit, Benedikt Wiestler, Bjoern Menze"
