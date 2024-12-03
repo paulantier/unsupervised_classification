@@ -192,7 +192,7 @@ class ViTAutoencoder(nn.Module):
         # Encode
         encoded = self.encoder(x)
         
-        # Generate decoder query embeddings
+        # Generate decoder query embeddings (could be learned or copied from encoder)
         query = self.pos_embed.expand(x.shape[0], -1, -1)
         
         # Decode
@@ -204,36 +204,48 @@ class ViTAutoencoder(nn.Module):
         # Reshape patches to image
         output = self.unpatchify(patches)
         
-        return output, encoded
+        return output
 
 
-def mask_patches(images, p, patch_size):
+def quadtree_compression(image, threshold):
+    """
+    Quadtree compression and decompression for batched images with channels.
+    Args:
+        image: Tensor of shape (batch_size, channels, height, width).
+        threshold: Variance threshold for determining uniform regions.
+    Returns:
+        decompressed: Tensor of the same shape as the input image.
+    """
+    def is_uniform(region):
+        return torch.var(region, dim=(-2, -1), keepdim=True) < threshold
 
-    batch_size, channels, height, width = images.size()
-    
-    # Reshape images into patches
-    patches = images.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
-    # Shape: (batch_size, channels, num_patches_h, num_patches_w, patch_size, patch_size)
-    
-    num_patches_h = patches.size(2)
-    num_patches_w = patches.size(3)
-    
-    # Flatten patches for easier masking
-    patches = patches.contiguous().view(batch_size, channels, num_patches_h, num_patches_w, -1)
-    
-    # Create mask for patches
-    mask = torch.rand((batch_size, num_patches_h, num_patches_w), device=images.device) < p
-    mask = mask.unsqueeze(1).unsqueeze(-1)  # Shape: (batch_size, 1, num_patches_h, num_patches_w, 1)
-    
-    # Apply mask to patches
-    patches = patches * (~mask)
-    
-    # Reshape back to image format
-    patches = patches.view(batch_size, channels, num_patches_h, num_patches_w, patch_size, patch_size)
-    images = patches.permute(0, 1, 2, 4, 3, 5).contiguous()
-    images = images.view(batch_size, channels, height, width)
-    
-    return images
+    def divide_and_conquer(region, size):
+        if size == 1 or is_uniform(region).all():
+            return torch.mean(region, dim=(-2, -1), keepdim=True).expand(-1, -1, size, size)
+
+        half = size // 2
+        # Subdivide the region into quadrants
+        quads = [
+            region[:, :, :half, :half],  # Top-left
+            region[:, :, :half, half:],  # Top-right
+            region[:, :, half:, :half],  # Bottom-left
+            region[:, :, half:, half:],  # Bottom-right
+        ]
+
+        results = [divide_and_conquer(quad, half) for quad in quads]
+
+        # Combine quadrants back into one region
+        top = torch.cat(results[:2], dim=-1)
+        bottom = torch.cat(results[2:], dim=-1)
+        return torch.cat([top, bottom], dim=-2)
+
+    # Initial call to the recursive divide_and_conquer function
+    batch_size, channels, height, width = image.shape
+
+    decompressed = divide_and_conquer(image, height)
+
+    return decompressed
+
 
 def noise_image(images, std_dev=0.05):
     noise = torch.randn_like(images) * std_dev
@@ -246,7 +258,7 @@ def train_vit_autoencoder(
     num_epochs=100,
     learning_rate=1e-4,
     device="cuda" if torch.cuda.is_available() else "cpu",
-    save_dir="vit_checkpoints",
+    save_dir="qt_vit_checkpoints",
     start_epoch=1,
 ):
 
@@ -276,26 +288,13 @@ def train_vit_autoencoder(
         for batch_idx, (images, _) in enumerate(train_pbar):
             images = images.to(device)
 
-            """
-            noisy_images = noise_image(images.clone(), std_dev=0.2)
-            masked_noisy_images = mask_patches(noisy_images, p=0.4, patch_size = 4)
-            reconstructed = model(masked_noisy_images)
-            loss = criterion(reconstructed, images)
-            """
-
-            noisy_images1 = noise_image(images.clone(), std_dev=0.1)
-            noisy_images2 = noise_image(images.clone(), std_dev=0.1)
-            masked_noisy_images1 = mask_patches(noisy_images1, p=0.4, patch_size = 16)
-            masked_noisy_images2 = mask_patches(noisy_images2, p=0.4, patch_size = 16)
+            qt_images = quadtree_compression(images.clone(), threshold=1)
+            noisy_qt_images = noise_image(qt_images, std_dev=0.2)
             
             # Forward pass
-            reconstructed1, encoded1 = model(masked_noisy_images1)
-            _, encoded2 = model(masked_noisy_images2)
-            reconstruction_loss = criterion(reconstructed1, images)
-            contrastive_loss = criterion(encoded1, encoded2)
+            reconstructed = model(noisy_qt_images)
+            loss = criterion(reconstructed, images)
             
-            loss = reconstruction_loss + contrastive_loss
-
             # Backward pass and optimization
             optimizer.zero_grad()
             loss.backward()
@@ -318,19 +317,11 @@ def train_vit_autoencoder(
         with torch.no_grad():
             for batch_idx, (images, _) in enumerate(test_pbar):
                 images = images.to(device)
-                noisy_images1 = noise_image(images.clone(), std_dev=0.1)
-                noisy_images2 = noise_image(images.clone(), std_dev=0.1)
-                masked_noisy_images1 = mask_patches(noisy_images1, p=0.4, patch_size = 16)
-                masked_noisy_images2 = mask_patches(noisy_images2, p=0.4, patch_size = 16)
+                qt_images = quadtree_compression(images.clone(), threshold=1)
+                noisy_qt_images = noise_image(qt_images, std_dev=0.2)
                 
-                # Forward pass
-                reconstructed1, encoded1 = model(masked_noisy_images1)
-                _, encoded2 = model(masked_noisy_images2)
-                reconstruction_loss = criterion(reconstructed1, images)
-                contrastive_loss = criterion(encoded1, encoded2)
-                
-                loss = reconstruction_loss + contrastive_loss
-
+                reconstructed = model(noisy_qt_images)
+                loss = criterion(reconstructed, images)
                 test_loss += loss.item()
                 test_pbar.set_postfix({'loss': loss.item()})
                 
@@ -338,9 +329,9 @@ def train_vit_autoencoder(
                 if (batch_idx <=2 and (epoch+1) % 2 == 0):
                     save_sample_reconstructions(
                         images, 
-                        noisy_images1, 
-                        masked_noisy_images1, 
-                        reconstructed1, 
+                        qt_images, 
+                        noisy_qt_images, 
+                        reconstructed, 
                         epoch, 
                         save_dir,
                         batch_idx,
@@ -397,12 +388,12 @@ def save_sample_reconstructions(original, noisy, masked_noisy, reconstructed, ep
         # Reconstructed images
         axes[1, i].imshow(np.transpose(noisy[i], (1, 2, 0)))
         axes[1, i].axis('off')
-        axes[1, i].set_title('+ Noise')
+        axes[1, i].set_title('QuadTree Compression')
 
         # Reconstructed images
         axes[2, i].imshow(np.transpose(masked_noisy[i], (1, 2, 0)))
         axes[2, i].axis('off')
-        axes[2, i].set_title('Mask + noise')
+        axes[2, i].set_title('QuadTree + noise')
 
         # Reconstructed images
         axes[3, i].imshow(np.transpose(reconstructed[i], (1, 2, 0)))
@@ -444,10 +435,10 @@ if __name__ == "__main__":
         img_size=128,          
         patch_size=16,         
         in_channels=3,         
-        embed_dim=768,        
+        embed_dim=1024,        
         num_heads=16,          
-        encoder_depth=8,      
-        decoder_depth=6        # Slightly fewer layers in the decoder (fewer are often needed for reconstruction).
+        encoder_depth=12,      
+        decoder_depth=8        # Slightly fewer layers in the decoder (fewer are often needed for reconstruction).
     )
     """
     model = ViTAutoencoder(
@@ -460,9 +451,11 @@ if __name__ == "__main__":
         num_heads=8
     ) 
     """
+
+    checkpoint_path = "qt_vit_checkpoints/best_model.pth"
     start_epoch=0
-    checkpoint_path = "vit_checkpoints/best_model.pth"
     #model, start_epoch = load_model(checkpoint_path, model)
+
     
     # Train the model
     train_vit_autoencoder(
